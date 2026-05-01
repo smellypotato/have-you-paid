@@ -4,6 +4,20 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { IoCopyOutline, IoLockClosedOutline, IoLockOpenOutline } from 'react-icons/io5'
 import { ClaimItemDialog } from '../components/ClaimItemDialog'
 import { ReceiptBoard } from '../components/ReceiptBoard'
+import {
+  mutationPaymentAckUpsert,
+  mutationRpcKickGuest,
+  mutationRpcLeaveGuest,
+  mutationSessionLock,
+  mutationSessionSetReceiptPath,
+  mutationSessionUpdateMaxGuests,
+  mutationSessionUpdateTitle,
+  mutationSlotClaimDeleteById,
+  mutationSlotClaimUpsert,
+  mutationSplitItemCreate,
+  mutationSplitItemDelete,
+  mutationSplitItemHostEdit,
+} from '../api/databaseMutations'
 import { useAuth } from '../lib/auth'
 import { formatErrorMessage } from '../lib/errors'
 import { supabase } from '../lib/supabaseClient'
@@ -114,11 +128,9 @@ export function SessionPage() {
 
     const amParticipant = plist.some((row) => row.user_id === user.id)
     if (!amParticipant) {
-      setLoadError('You are not in this session. Scan the QR code or open the join link.')
-      setSplitItems([])
-      setClaims([])
-      setPaymentAcks([])
-      setImageUrl(null)
+      setSession(null)
+      setParticipants([])
+      navigate(`/join/${sessionId}`, { replace: true })
       return
     }
 
@@ -175,11 +187,17 @@ export function SessionPage() {
     } else {
       setImageUrl(null)
     }
-  }, [sessionId, user])
+  }, [sessionId, user, navigate])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!ready || user) return
+    if (!sessionId || !isUuid(sessionId)) return
+    navigate(`/join/${sessionId}`, { replace: true })
+  }, [ready, user, sessionId, navigate])
 
   useEffect(() => {
     if (!sessionId || !user || !isUuid(sessionId)) return
@@ -333,11 +351,10 @@ export function SessionPage() {
         contentType: file.type || 'image/jpeg',
       })
       if (uErr) throw uErr
-      const { error: upErr } = await supabase
-        .from('sessions')
-        .update({ receipt_storage_path: path })
-        .eq('id', sessionId)
-      if (upErr) throw upErr
+      await mutationSessionSetReceiptPath(supabase, {
+        session_id: sessionId,
+        receipt_storage_path: path,
+      })
       if (receiptFileInputRef.current) receiptFileInputRef.current.value = ''
       if (receiptCaptureInputRef.current) receiptCaptureInputRef.current.value = ''
       await load()
@@ -354,14 +371,13 @@ export function SessionPage() {
     const count = Math.min(20, Math.max(1, Math.floor(addSlotDraft)))
     const label = addLabelDraft.trim() || null
     try {
-      const { error } = await supabase.from('split_items').insert({
+      await mutationSplitItemCreate(supabase, {
         session_id: sessionId,
         slot_count: count,
         anchor_x: pendingPos.x,
         anchor_y: pendingPos.y,
         label,
       })
-      if (error) throw error
       closeDialogs()
       await load()
     } catch (e: unknown) {
@@ -375,19 +391,13 @@ export function SessionPage() {
     const count = Math.min(20, Math.max(1, Math.floor(hostEditSlotCount)))
     const label = hostEditLabel.trim() || null
     try {
-      const clear = mustClearClaimsOnEdit(count, itemClaimsForDialog)
-      if (clear) {
-        const { error: delErr } = await supabase
-          .from('split_item_slot_claims')
-          .delete()
-          .eq('split_item_id', dialogItem.id)
-        if (delErr) throw delErr
-      }
-      const { error: upErr } = await supabase
-        .from('split_items')
-        .update({ slot_count: count, label })
-        .eq('id', dialogItem.id)
-      if (upErr) throw upErr
+      const clear_claims = mustClearClaimsOnEdit(count, itemClaimsForDialog)
+      await mutationSplitItemHostEdit(supabase, {
+        split_item_id: dialogItem.id,
+        slot_count: count,
+        label,
+        clear_claims,
+      })
       await load()
     } catch (e: unknown) {
       setActionError(formatErrorMessage(e))
@@ -400,8 +410,7 @@ export function SessionPage() {
     setSplitItemRemoving(true)
     setActionError(null)
     try {
-      const { error } = await supabase.from('split_items').delete().eq('id', dialogItem.id)
-      if (error) throw error
+      await mutationSplitItemDelete(supabase, { split_item_id: dialogItem.id })
       closeDialogs()
       await load()
     } catch (e: unknown) {
@@ -421,15 +430,10 @@ export function SessionPage() {
     try {
       // Idempotent under rapid clicks: if the slot is already claimed, ignore the duplicate.
       // This preserves the unique constraint and avoids accidentally overwriting someone else's claim.
-      const { error } = await supabase.from('split_item_slot_claims').upsert(
-        {
-          split_item_id: itemDialogId,
-          slot_index: slotIndex,
-          claimed_by_user_id: user.id,
-        },
-        { onConflict: 'split_item_id,slot_index', ignoreDuplicates: true },
-      )
-      if (error) throw error
+      await mutationSlotClaimUpsert(supabase, {
+        split_item_id: itemDialogId,
+        slot_index: slotIndex,
+      })
       await load()
     } catch (e: unknown) {
       setActionError(formatErrorMessage(e))
@@ -444,8 +448,7 @@ export function SessionPage() {
     releaseInFlightRef.current.add(claimId)
     setActionError(null)
     try {
-      const { error } = await supabase.from('split_item_slot_claims').delete().eq('id', claimId)
-      if (error) throw error
+      await mutationSlotClaimDeleteById(supabase, { claim_id: claimId })
       await load()
     } catch (e: unknown) {
       setActionError(formatErrorMessage(e))
@@ -464,8 +467,10 @@ export function SessionPage() {
     setSessionTitleSaving(true)
     setActionError(null)
     try {
-      const { error } = await supabase.from('sessions').update({ title: next || null }).eq('id', sessionId)
-      if (error) throw error
+      await mutationSessionUpdateTitle(supabase, {
+        session_id: sessionId,
+        title: next || null,
+      })
       await load()
       setEditingSessionTitle(false)
     } catch (e: unknown) {
@@ -513,8 +518,10 @@ export function SessionPage() {
     setMaxGuestsSaving(true)
     setActionError(null)
     try {
-      const { error } = await supabase.from('sessions').update({ max_guests: next }).eq('id', sessionId)
-      if (error) throw error
+      await mutationSessionUpdateMaxGuests(supabase, {
+        session_id: sessionId,
+        max_guests: next,
+      })
       await load()
     } catch (e: unknown) {
       setActionError(formatErrorMessage(e))
@@ -530,11 +537,10 @@ export function SessionPage() {
     setKickingUserId(guestUserId)
     setActionError(null)
     try {
-      const { error } = await supabase.rpc('kick_session_guest', {
-        p_session_id: sessionId,
-        p_guest_user_id: guestUserId,
+      await mutationRpcKickGuest(supabase, {
+        session_id: sessionId,
+        guest_user_id: guestUserId,
       })
-      if (error) throw error
       await load()
     } catch (e: unknown) {
       setActionError(formatErrorMessage(e))
@@ -549,8 +555,7 @@ export function SessionPage() {
     setLeaveBusy(true)
     setActionError(null)
     try {
-      const { error } = await supabase.rpc('leave_session_as_guest', { p_session_id: sessionId })
-      if (error) throw error
+      await mutationRpcLeaveGuest(supabase, { session_id: sessionId })
       navigate('/', { replace: true })
     } catch (e: unknown) {
       setActionError(formatErrorMessage(e))
@@ -564,12 +569,13 @@ export function SessionPage() {
     setLockBusy(true)
     setActionError(null)
     try {
-      const { error } = await supabase
-        .from('sessions')
-        .update({ status: 'locked', locked_at: new Date().toISOString() })
-        .eq('id', sessionId)
-      if (error) setActionError(error.message)
+      await mutationSessionLock(supabase, {
+        session_id: sessionId,
+        locked_at: new Date().toISOString(),
+      })
       await load()
+    } catch (e: unknown) {
+      setActionError(formatErrorMessage(e))
     } finally {
       setLockBusy(false)
     }
@@ -578,16 +584,15 @@ export function SessionPage() {
   const markPaid = async () => {
     if (!sessionId || !user) return
     setActionError(null)
-    const { error } = await supabase.from('payment_acknowledgements').upsert(
-      {
+    try {
+      await mutationPaymentAckUpsert(supabase, {
         session_id: sessionId,
-        user_id: user.id,
         acknowledged_at: new Date().toISOString(),
-      },
-      { onConflict: 'session_id,user_id' },
-    )
-    if (error) setActionError(error.message)
-    await load()
+      })
+      await load()
+    } catch (e: unknown) {
+      setActionError(formatErrorMessage(e))
+    }
   }
 
   if (!ready) {
@@ -598,10 +603,18 @@ export function SessionPage() {
     )
   }
 
-  if (authError || !user) {
+  if (authError) {
     return (
       <div className="appShell">
-        <div className="alert">{authError ?? 'Not signed in.'}</div>
+        <div className="alert">{authError}</div>
+      </div>
+    )
+  }
+
+  if (!user) {
+    return (
+      <div className="appShell">
+        <p className="muted">Redirecting…</p>
       </div>
     )
   }

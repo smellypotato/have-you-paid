@@ -150,6 +150,9 @@ enabled = true
 site_url = "http://127.0.0.1:3000"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
 additional_redirect_urls = ["https://127.0.0.1:3000"]
+# If [auth.email] enable_confirmations = true, email sign-up may not return a session until the user confirms.
+# The app stores a pending join id in sessionStorage and JoinIntentRecovery.tsx sends the user to /join/:id once a session exists.
+
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to the local API URL (http://127.0.0.1:<port>/auth/v1).
@@ -164,7 +167,8 @@ refresh_token_reuse_interval = 10
 # Allow/disallow new user signups to your project.
 enable_signup = true
 # Allow/disallow anonymous sign-ins to your project.
-enable_anonymous_sign_ins = false
+# Enable the same in the hosted Dashboard (Authentication) so “Continue without account” / post-log-out anon works.
+enable_anonymous_sign_ins = true
 # Allow/disallow testing manual linking of accounts
 enable_manual_linking = false
 # Passwords shorter than this value will be rejected as weak. Minimum 6, recommended 8 or more.
@@ -382,6 +386,12 @@ s3_region = "env(S3_REGION)"
 s3_access_key = "env(S3_ACCESS_KEY)"
 # Configures AWS_SECRET_ACCESS_KEY for S3 bucket
 s3_secret_key = "env(S3_SECRET_KEY)"
+
+[functions.app-api]
+enabled = true
+verify_jwt = true
+import_map = "./functions/app-api/deno.json"
+entrypoint = "./functions/app-api/index.ts"
 
 [functions.hello]
 enabled = true

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { ColdStartAuth } from '../components/ColdStartAuth'
 import { useAuth } from '../lib/auth'
+import { isMutationPostgresDup, mutationParticipantJoinGuest } from '../api/databaseMutations'
 import { formatErrorMessage } from '../lib/errors'
 import { supabase } from '../lib/supabaseClient'
 import { isUuid } from '../lib/uuid'
@@ -45,21 +47,19 @@ export function JoinPage() {
         return
       }
 
-      const { error: pe } = await supabase.from('session_participants').insert({
-        session_id: sessionId,
-        user_id: user.id,
-        role: 'guest',
-      })
-      if (pe) {
-        if (pe.code === '23505') {
+      try {
+        await mutationParticipantJoinGuest(supabase, { session_id: sessionId })
+      } catch (pe: unknown) {
+        if (isMutationPostgresDup(pe)) {
           navigate(`/session/${sessionId}`, { replace: true })
           return
         }
-        if (pe.message?.includes('Guest limit reached')) {
+        const msg = formatErrorMessage(pe)
+        if (msg.includes('Guest limit reached')) {
           setMessage('This bill has reached its guest limit. Ask the host to raise the limit or make room.')
           return
         }
-        setMessage(pe.message)
+        setMessage(msg)
         return
       }
       navigate(`/session/${sessionId}`, { replace: true })
@@ -74,12 +74,24 @@ export function JoinPage() {
     )
   }
 
-  if (authError || !user) {
+  if (authError) {
     return (
       <div className="appShell">
-        <div className="alert">{authError ?? 'Not signed in.'}</div>
+        <div className="alert">{authError}</div>
       </div>
     )
+  }
+
+  if (!user) {
+    if (!sessionId || !isUuid(sessionId)) {
+      return (
+        <div className="appShell stack">
+          <div className="alert">Invalid session link.</div>
+          <Link to="/">Home</Link>
+        </div>
+      )
+    }
+    return <ColdStartAuth intent={{ kind: 'join', sessionId }} />
   }
 
   return (

@@ -1,6 +1,6 @@
 import type { Session, User } from '@supabase/supabase-js'
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { ensureSignedIn } from './ensureAuthSession'
+import { restoreStoredSession } from './restoreStoredSession'
 import { supabase } from './supabaseClient'
 
 type AuthState = {
@@ -19,7 +19,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    const { session: s, error: e } = await ensureSignedIn()
+    const { session: s, error: e } = await restoreStoredSession()
     setSession(s)
     setUser(s?.user ?? null)
     setError(e)
@@ -31,6 +31,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
       setSession(sess)
       setUser(sess?.user ?? null)
+      setError(null)
     })
     return () => sub.subscription.unsubscribe()
   }, [refresh])

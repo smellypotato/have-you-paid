@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { ColdStartAuth } from '../components/ColdStartAuth'
 import { ReceiptBoard } from '../components/ReceiptBoard'
 import { useAuth } from '../lib/auth'
+import { useCommitDisplayNamePatch } from '../lib/profileDisplayPatch'
 import { formatErrorMessage } from '../lib/errors'
 import { defaultNewSessionTitle, formatSessionCreatedAt } from '../lib/sessionDisplay'
+import {
+  mutationHostBillCreate,
+  mutationProfileSaveDisplayName,
+  mutationSessionSetReceiptPath,
+} from '../api/databaseMutations'
 import { supabase } from '../lib/supabaseClient'
 import type { SessionRow } from '../lib/types'
 
@@ -16,7 +23,9 @@ type ParticipantWithSession = {
 export function Home() {
   const navigate = useNavigate()
   const { user, ready, error: authError } = useAuth()
+  const commitDisplayNamePatch = useCommitDisplayNamePatch()
   const [displayName, setDisplayName] = useState('')
+  const [profileSaving, setProfileSaving] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [sessions, setSessions] = useState<ParticipantWithSession[]>([])
   const [loadingSessions, setLoadingSessions] = useState(true)
@@ -98,11 +107,18 @@ export function Home() {
   }, [user])
 
   const saveDisplayName = async () => {
-    if (!user) return
+    if (!user || profileSaving) return
     setProfileError(null)
     const name = displayName.trim() || 'Guest'
-    const { error } = await supabase.from('profiles').upsert({ id: user.id, display_name: name })
-    if (error) setProfileError(error.message)
+    setProfileSaving(true)
+    try {
+      await mutationProfileSaveDisplayName(supabase, { display_name: name })
+      commitDisplayNamePatch(user.id, name)
+    } catch (e: unknown) {
+      setProfileError(formatErrorMessage(e))
+    } finally {
+      setProfileSaving(false)
+    }
   }
 
   const createSessionWithoutImage = async () => {
@@ -110,19 +126,9 @@ export function Home() {
     setBusy(true)
     setCreateError(null)
     try {
-      const { data: sessionRow, error: sErr } = await supabase
-        .from('sessions')
-        .insert({ host_user_id: user.id, title: defaultNewSessionTitle() })
-        .select('id')
-        .single()
-      if (sErr || !sessionRow) throw sErr ?? new Error('Failed to create session')
-      const sessionId = sessionRow.id as string
-      const { error: pErr } = await supabase.from('session_participants').insert({
-        session_id: sessionId,
-        user_id: user.id,
-        role: 'host',
+      const { session_id: sessionId } = await mutationHostBillCreate(supabase, {
+        title: defaultNewSessionTitle(),
       })
-      if (pErr) throw pErr
       await loadMySessions()
       navigate(`/session/${sessionId}`)
     } catch (e: unknown) {
@@ -138,21 +144,9 @@ export function Home() {
     setBusy(true)
     setCreateError(null)
     try {
-      const { data: sessionRow, error: sErr } = await supabase
-        .from('sessions')
-        .insert({ host_user_id: user.id, title: defaultNewSessionTitle() })
-        .select('id')
-        .single()
-      if (sErr || !sessionRow) throw sErr ?? new Error('Failed to create session')
-
-      const sessionId = sessionRow.id as string
-
-      const { error: pErr } = await supabase.from('session_participants').insert({
-        session_id: sessionId,
-        user_id: user.id,
-        role: 'host',
+      const { session_id: sessionId } = await mutationHostBillCreate(supabase, {
+        title: defaultNewSessionTitle(),
       })
-      if (pErr) throw pErr
 
       const ext = file.name.split('.').pop()?.toLowerCase() ?? 'jpg'
       const path = `${sessionId}/receipt.${ext}`
@@ -162,11 +156,7 @@ export function Home() {
       })
       if (uErr) throw uErr
 
-      const { error: upErr } = await supabase
-        .from('sessions')
-        .update({ receipt_storage_path: path })
-        .eq('id', sessionId)
-      if (upErr) throw upErr
+      await mutationSessionSetReceiptPath(supabase, { session_id: sessionId, receipt_storage_path: path })
 
       setFileAndPreview(null)
       await loadMySessions()
@@ -195,12 +185,16 @@ export function Home() {
     )
   }
 
-  if (authError || !user) {
+  if (authError) {
     return (
       <div className="appShell">
-        <div className="alert">{authError ?? 'Not signed in.'}</div>
+        <div className="alert">{authError}</div>
       </div>
     )
+  }
+
+  if (!user) {
+    return <ColdStartAuth intent={{ kind: 'home' }} />
   }
 
   return (
@@ -220,8 +214,13 @@ export function Home() {
             placeholder="Guest"
             aria-label="Display name"
           />
-          <button type="button" className="btn btnPrimary" onClick={() => void saveDisplayName()}>
-            Save
+          <button
+            type="button"
+            className="btn btnPrimary"
+            disabled={profileSaving}
+            onClick={() => void saveDisplayName()}
+          >
+            {profileSaving ? 'Updating…' : 'Save'}
           </button>
         </div>
         {profileError ? <p className="muted">{profileError}</p> : null}
